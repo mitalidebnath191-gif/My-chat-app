@@ -8,15 +8,12 @@
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: Arial, sans-serif; }
         body { background: #0b141a; height: 100vh; display: flex; color: white; overflow: hidden; }
         
-        /* Login Screen */
         #login-screen { width: 100%; height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center; background: #111b21; z-index: 10; }
         #login-screen input { padding: 12px; border-radius: 8px; border: none; font-size: 16px; margin-bottom: 15px; width: 250px; text-align: center; }
         #login-screen button { padding: 12px 25px; border-radius: 8px; border: none; background: #00a884; color: white; font-size: 16px; cursor: pointer; font-weight: bold; }
         
-        /* Main App Screen */
         #app-screen { display: none; width: 100%; height: 100vh; flex-direction: row; }
         
-        /* Sidebar (Users & Groups) */
         .sidebar { width: 35%; background: #111b21; border-right: 1px solid #2a3942; display: flex; flex-direction: column; overflow-y: auto; }
         .sidebar-header { background: #202c33; padding: 15px; font-weight: bold; font-size: 18px; display: flex; justify-content: space-between; align-items: center; }
         .sidebar-header button { background: #00a884; color: white; border: none; padding: 5px 10px; border-radius: 5px; cursor: pointer; font-size: 12px; }
@@ -25,7 +22,6 @@
         .list-item:hover { background: #202c33; }
         .online-dot { color: #00a884; font-size: 12px; margin-right: 5px; }
         
-        /* Chat Area */
         .chat-area { width: 65%; display: flex; flex-direction: column; background: #0b141a; }
         .chat-header { background: #202c33; padding: 15px; font-size: 18px; font-weight: bold; border-bottom: 1px solid #2a3942; }
         .messages { flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; }
@@ -34,7 +30,6 @@
         .me { background: #005c4b; align-self: flex-end; border-top-right-radius: 0; }
         .other { background: #202c33; align-self: flex-start; border-top-left-radius: 0; }
         
-        /* Input Area */
         .input-area { display: flex; padding: 10px; background: #202c33; }
         #messageInput { flex: 1; padding: 12px; border: none; border-radius: 8px; outline: none; font-size: 15px; background: #2a3942; color: white; }
         #sendBtn { padding: 12px 20px; margin-left: 10px; border: none; border-radius: 8px; background: #00a884; color: white; cursor: pointer; font-weight: bold; }
@@ -65,7 +60,7 @@
         </div>
 
         <div class="chat-area">
-            <div class="chat-header" id="chat-title">Select a user or group to start chatting</div>
+            <div class="chat-header" id="chat-title">Select a user or group</div>
             <div class="messages" id="messages"></div>
             <div class="input-area">
                 <input type="text" id="messageInput" placeholder="Type a message..." disabled autocomplete="off">
@@ -74,9 +69,13 @@
         </div>
     </div>
 
+    <audio id="notificationSound" src="https://assets.mixkit.co/active_storage/sfx/2358/2358-preview.mp3" preload="auto"></audio>
+
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
         import { getDatabase, ref, push, onChildAdded, set, onValue, onDisconnect } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+        // পুশ নোটিফিকেশনের মডিউল ইমপোর্ট করা হলো
+        import { getMessaging, getToken, onMessage } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyCUqYFyYMHQNT8-CdOfkdh2mMhv4bUNIh4",
@@ -90,16 +89,28 @@
 
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
+        const messaging = getMessaging(app);
 
-        // গ্লোবাল ভেরিয়েবল
         let myId = localStorage.getItem("userid") || "user_" + Date.now();
         localStorage.setItem("userid", myId);
         let myName = "";
         
         let activeChatPath = ""; 
-        let activeChatListener = null; // পুরনো চ্যাটের মেসেজ অফ করার জন্য
+        let activeChatListener = null; 
+        
+        const appLoadTime = Date.now();
+        const notifSound = document.getElementById("notificationSound");
 
-        // লগিন ফাংশন
+        // Service Worker ম্যানুয়ালি রেজিস্টার করা
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/firebase-messaging-sw.js')
+            .then(function(registration) {
+                console.log('Service Worker Registered');
+            }).catch(function(err) {
+                console.log('Service Worker failed', err);
+            });
+        }
+
         window.startLogin = function() {
             const nameField = document.getElementById("loginName").value.trim();
             if (!nameField) {
@@ -112,18 +123,38 @@
             document.getElementById("app-screen").style.display = "flex";
             document.getElementById("my-name-display").innerText = myName;
 
-            // ডাটাবেসে ইউজারকে অনলাইন দেখানো
             const userRef = ref(db, "users/" + myId);
             set(userRef, { name: myName, online: true });
-            
-            // ব্রাউজার কাটলে অটোমেটিক অফলাইন হয়ে যাবে
-            onDisconnect(userRef).set({ name: myName, online: false });
+            onDisconnect(userRef).update({ online: false });
+
+            // সাউন্ড আনলক
+            notifSound.play().catch(() => {});
+
+            // ব্যাকগ্রাউন্ড নোটিফিকেশনের পারমিশন এবং টোকেন নেওয়া
+            if ("Notification" in window) {
+                Notification.requestPermission().then((permission) => {
+                    if (permission === "granted") {
+                        // আপনার দেওয়া VAPID Key এখানে বসানো হয়েছে
+                        getToken(messaging, { vapidKey: "BLWDdmbZ2WUdawbXsR-lJR8iNhmxr_wEt_Ly0nimaJFLx8apn3l7p2Ng8WLRknO5P3uPwd1r4ojKhYz8RaPTVM4" })
+                        .then((currentToken) => {
+                            if (currentToken) {
+                                // ডাটাবেসে ইউজার প্রোফাইলের সাথে টোকেন সেভ করে রাখা
+                                set(ref(db, "users/" + myId + "/token"), currentToken);
+                            }
+                        });
+                    }
+                });
+            }
 
             loadOnlineUsers();
             loadGroups();
         }
 
-        // অনলাইন ইউজার লোড করা
+        // চ্যাট অ্যাপ ওপেন থাকা অবস্থায় নোটিফিকেশন রিসিভ করা
+        onMessage(messaging, (payload) => {
+            console.log("Foreground Message: ", payload);
+        });
+
         function loadOnlineUsers() {
             onValue(ref(db, "users"), snapshot => {
                 const users = snapshot.val() || {};
@@ -139,7 +170,6 @@
             });
         }
 
-        // গ্রুপ লোড করা
         function loadGroups() {
             onValue(ref(db, "groups"), snapshot => {
                 const groups = snapshot.val() || {};
@@ -153,7 +183,6 @@
             });
         }
 
-        // নতুন গ্রুপ বানানো
         window.createGroup = function() {
             const groupName = prompt("Enter new group name:");
             if (groupName && groupName.trim() !== "") {
@@ -161,36 +190,30 @@
             }
         }
 
-        // পার্সোনাল চ্যাট ওপেন করা
         window.openPrivateChat = function(otherId, otherName) {
             document.getElementById("chat-title").innerText = "Chatting with: " + otherName;
-            // দুই ইউজারের আইডি মিলিয়ে একটি ইউনিক চ্যাট আইডি তৈরি করা
             const chatId = myId < otherId ? `${myId}_${otherId}` : `${otherId}_${myId}`;
             activeChatPath = "private_messages/" + chatId;
             loadMessages();
         }
 
-        // গ্রুপ চ্যাট ওপেন করা
         window.openGroupChat = function(groupId, groupName) {
             document.getElementById("chat-title").innerText = "Group: " + groupName;
             activeChatPath = "group_messages/" + groupId;
             loadMessages();
         }
 
-        // মেসেজ লোড করা
         function loadMessages() {
             const msgDiv = document.getElementById("messages");
-            msgDiv.innerHTML = ""; // পুরনো স্ক্রিনের মেসেজ মুছে ফেলা
+            msgDiv.innerHTML = ""; 
             
             document.getElementById("messageInput").disabled = false;
             document.getElementById("sendBtn").disabled = false;
 
-            // আগের চ্যাটের লিসেনার থাকলে তা অফ করে দেওয়া
             if (activeChatListener) {
                 activeChatListener(); 
             }
 
-            // নতুন চ্যাটের মেসেজ শোনা
             activeChatListener = onChildAdded(ref(db, activeChatPath), snapshot => {
                 const msg = snapshot.val();
                 const div = document.createElement("div");
@@ -199,11 +222,22 @@
                 div.innerHTML = `<b>${msg.senderName}</b>${msg.text}`;
                 
                 msgDiv.appendChild(div);
-                msgDiv.scrollTop = msgDiv.scrollHeight; // অটো-স্ক্রল নিচে
+                msgDiv.scrollTop = msgDiv.scrollHeight; 
+
+                // মিনিমাইজ থাকা অবস্থায় নোটিফিকেশন
+                if (msg.senderId !== myId && msg.timestamp > appLoadTime) {
+                    notifSound.play().catch(e => console.log("Audio play error:", e));
+                    
+                    if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+                        new Notification(`New message from ${msg.senderName}`, {
+                            body: msg.text,
+                            icon: "https://cdn-icons-png.flaticon.com/512/1041/1041916.png"
+                        });
+                    }
+                }
             });
         }
 
-        // মেসেজ সেন্ড করা
         window.sendMessage = function() {
             const input = document.getElementById("messageInput");
             const text = input.value.trim();
@@ -219,7 +253,6 @@
             input.value = "";
         }
 
-        // Enter চাপলে মেসেজ যাবে
         document.getElementById("messageInput").addEventListener("keypress", function (e) {
             if (e.key === "Enter") {
                 sendMessage();
@@ -228,5 +261,5 @@
 
     </script>
 </body>
-</html>                                                     </html>
-  
+</html>
+    
