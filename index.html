@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Real Chat</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: Arial, sans-serif; }
+        body { background: #0b141a; height: 100vh; display: flex; color: white; overflow: hidden; }
+        
+        /* Login Screen */
+        #login-screen { width: 100%; height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center; background: #111b21; z-index: 10; }
+        #login-screen input { padding: 12px; border-radius: 8px; border: none; font-size: 16px; margin-bottom: 15px; width: 250px; text-align: center; }
+        #login-screen button { padding: 12px 25px; border-radius: 8px; border: none; background: #00a884; color: white; font-size: 16px; cursor: pointer; font-weight: bold; }
+        
+        /* Main App Screen */
+        #app-screen { display: none; width: 100%; height: 100vh; flex-direction: row; }
+        
+        /* Sidebar (Users & Groups) */
+        .sidebar { width: 35%; background: #111b21; border-right: 1px solid #2a3942; display: flex; flex-direction: column; overflow-y: auto; }
+        .sidebar-header { background: #202c33; padding: 15px; font-weight: bold; font-size: 18px; display: flex; justify-content: space-between; align-items: center; }
+        .sidebar-header button { background: #00a884; color: white; border: none; padding: 5px 10px; border-radius: 5px; cursor: pointer; font-size: 12px; }
+        .section-title { padding: 10px 15px; font-size: 14px; color: #00a884; background: #0b141a; border-bottom: 1px solid #2a3942; }
+        .list-item { padding: 15px; border-bottom: 1px solid #2a3942; cursor: pointer; font-size: 15px; }
+        .list-item:hover { background: #202c33; }
+        .online-dot { color: #00a884; font-size: 12px; margin-right: 5px; }
+        
+        /* Chat Area */
+        .chat-area { width: 65%; display: flex; flex-direction: column; background: #0b141a; }
+        .chat-header { background: #202c33; padding: 15px; font-size: 18px; font-weight: bold; border-bottom: 1px solid #2a3942; }
+        .messages { flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; }
+        .msg { padding: 10px; margin: 5px 0; border-radius: 8px; max-width: 80%; word-wrap: break-word; line-height: 1.4; }
+        .msg b { font-size: 12px; color: #00a884; display: block; margin-bottom: 3px; }
+        .me { background: #005c4b; align-self: flex-end; border-top-right-radius: 0; }
+        .other { background: #202c33; align-self: flex-start; border-top-left-radius: 0; }
+        
+        /* Input Area */
+        .input-area { display: flex; padding: 10px; background: #202c33; }
+        #messageInput { flex: 1; padding: 12px; border: none; border-radius: 8px; outline: none; font-size: 15px; background: #2a3942; color: white; }
+        #sendBtn { padding: 12px 20px; margin-left: 10px; border: none; border-radius: 8px; background: #00a884; color: white; cursor: pointer; font-weight: bold; }
+        #sendBtn:disabled, #messageInput:disabled { opacity: 0.5; cursor: not-allowed; }
+    </style>
+</head>
+
+<body>
+
+    <div id="login-screen">
+        <h2 style="margin-bottom: 20px; color: #00a884;">Welcome to Chat</h2>
+        <input type="text" id="loginName" placeholder="Enter any name..." autocomplete="off">
+        <button onclick="startLogin()">Start Chatting</button>
+    </div>
+
+    <div id="app-screen">
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <span id="my-name-display">My Profile</span>
+                <button onclick="createGroup()">+ New Group</button>
+            </div>
+            
+            <div class="section-title">🟢 Online Users</div>
+            <div id="user-list"></div>
+            
+            <div class="section-title">👥 Groups</div>
+            <div id="group-list"></div>
+        </div>
+
+        <div class="chat-area">
+            <div class="chat-header" id="chat-title">Select a user or group to start chatting</div>
+            <div class="messages" id="messages"></div>
+            <div class="input-area">
+                <input type="text" id="messageInput" placeholder="Type a message..." disabled autocomplete="off">
+                <button id="sendBtn" onclick="sendMessage()" disabled>Send</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+        import { getDatabase, ref, push, onChildAdded, set, onValue, onDisconnect } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyCUqYFyYMHQNT8-CdOfkdh2mMhv4bUNIh4",
+            authDomain: "chatap-2ca07.firebaseapp.com",
+            databaseURL: "https://chatap-2ca07-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "chatap-2ca07",
+            storageBucket: "chatap-2ca07.firebasestorage.app",
+            messagingSenderId: "46577729580",
+            appId: "1:46577729580:web:82811d9c9ca18162895189"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+
+        // গ্লোবাল ভেরিয়েবল
+        let myId = localStorage.getItem("userid") || "user_" + Date.now();
+        localStorage.setItem("userid", myId);
+        let myName = "";
+        
+        let activeChatPath = ""; 
+        let activeChatListener = null; // পুরনো চ্যাটের মেসেজ অফ করার জন্য
+
+        // লগিন ফাংশন
+        window.startLogin = function() {
+            const nameField = document.getElementById("loginName").value.trim();
+            if (!nameField) {
+                alert("Please enter a name first!");
+                return;
+            }
+            
+            myName = nameField;
+            document.getElementById("login-screen").style.display = "none";
+            document.getElementById("app-screen").style.display = "flex";
+            document.getElementById("my-name-display").innerText = myName;
+
+            // ডাটাবেসে ইউজারকে অনলাইন দেখানো
+            const userRef = ref(db, "users/" + myId);
+            set(userRef, { name: myName, online: true });
+            
+            // ব্রাউজার কাটলে অটোমেটিক অফলাইন হয়ে যাবে
+            onDisconnect(userRef).set({ name: myName, online: false });
+
+            loadOnlineUsers();
+            loadGroups();
+        }
+
+        // অনলাইন ইউজার লোড করা
+        function loadOnlineUsers() {
+            onValue(ref(db, "users"), snapshot => {
+                const users = snapshot.val() || {};
+                let html = "";
+                for (let id in users) {
+                    if (id !== myId && users[id].online) {
+                        html += `<div class="list-item" onclick="openPrivateChat('${id}', '${users[id].name}')">
+                                    <span class="online-dot">●</span> ${users[id].name}
+                                 </div>`;
+                    }
+                }
+                document.getElementById("user-list").innerHTML = html || "<p style='padding:15px; font-size:13px; color:gray;'>No one is online</p>";
+            });
+        }
+
+        // গ্রুপ লোড করা
+        function loadGroups() {
+            onValue(ref(db, "groups"), snapshot => {
+                const groups = snapshot.val() || {};
+                let html = "";
+                for (let id in groups) {
+                    html += `<div class="list-item" onclick="openGroupChat('${id}', '${groups[id].name}')">
+                                👥 ${groups[id].name}
+                             </div>`;
+                }
+                document.getElementById("group-list").innerHTML = html;
+            });
+        }
+
+        // নতুন গ্রুপ বানানো
+        window.createGroup = function() {
+            const groupName = prompt("Enter new group name:");
+            if (groupName && groupName.trim() !== "") {
+                push(ref(db, "groups"), { name: groupName.trim() });
+            }
+        }
+
+        // পার্সোনাল চ্যাট ওপেন করা
+        window.openPrivateChat = function(otherId, otherName) {
+            document.getElementById("chat-title").innerText = "Chatting with: " + otherName;
+            // দুই ইউজারের আইডি মিলিয়ে একটি ইউনিক চ্যাট আইডি তৈরি করা
+            const chatId = myId < otherId ? `${myId}_${otherId}` : `${otherId}_${myId}`;
+            activeChatPath = "private_messages/" + chatId;
+            loadMessages();
+        }
+
+        // গ্রুপ চ্যাট ওপেন করা
+        window.openGroupChat = function(groupId, groupName) {
+            document.getElementById("chat-title").innerText = "Group: " + groupName;
+            activeChatPath = "group_messages/" + groupId;
+            loadMessages();
+        }
+
+        // মেসেজ লোড করা
+        function loadMessages() {
+            const msgDiv = document.getElementById("messages");
+            msgDiv.innerHTML = ""; // পুরনো স্ক্রিনের মেসেজ মুছে ফেলা
+            
+            document.getElementById("messageInput").disabled = false;
+            document.getElementById("sendBtn").disabled = false;
+
+            // আগের চ্যাটের লিসেনার থাকলে তা অফ করে দেওয়া
+            if (activeChatListener) {
+                activeChatListener(); 
+            }
+
+            // নতুন চ্যাটের মেসেজ শোনা
+            activeChatListener = onChildAdded(ref(db, activeChatPath), snapshot => {
+                const msg = snapshot.val();
+                const div = document.createElement("div");
+
+                div.classList.add("msg", msg.senderId === myId ? "me" : "other");
+                div.innerHTML = `<b>${msg.senderName}</b>${msg.text}`;
+                
+                msgDiv.appendChild(div);
+                msgDiv.scrollTop = msgDiv.scrollHeight; // অটো-স্ক্রল নিচে
+            });
+        }
+
+        // মেসেজ সেন্ড করা
+        window.sendMessage = function() {
+            const input = document.getElementById("messageInput");
+            const text = input.value.trim();
+            if (!text || !activeChatPath) return;
+
+            push(ref(db, activeChatPath), {
+                senderId: myId,
+                senderName: myName,
+                text: text,
+                timestamp: Date.now()
+            });
+
+            input.value = "";
+        }
+
+        // Enter চাপলে মেসেজ যাবে
+        document.getElementById("messageInput").addEventListener("keypress", function (e) {
+            if (e.key === "Enter") {
+                sendMessage();
+            }
+        });
+
+    </script>
+</body>
+</html>                                                     </html>
+  
